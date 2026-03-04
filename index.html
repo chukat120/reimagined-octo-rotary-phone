@@ -1,0 +1,446 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no" />
+  <title>Voxel-ish Realistic Mobile Game (HTML)</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background:#000; touch-action: none; }
+    #ui { position: fixed; inset: 0; pointer-events: none; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial; }
+    #hint {
+      position: absolute; left: 12px; top: 12px; padding: 10px 12px; border-radius: 12px;
+      background: rgba(0,0,0,.45); color: #fff; font-size: 12px; line-height: 1.35; max-width: 340px;
+      pointer-events: auto;
+    }
+    #btnLock {
+      display: inline-block; margin-top: 8px; padding: 10px 12px; border-radius: 12px;
+      background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.18); color:#fff;
+      user-select: none; -webkit-user-select:none;
+    }
+    /* Mobile controls */
+    #stickBase {
+      position:absolute; left: 16px; bottom: 18px; width: 132px; height: 132px; border-radius: 66px;
+      background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.14);
+      pointer-events: auto;
+    }
+    #stickKnob {
+      position:absolute; left: 50%; top: 50%; width: 56px; height: 56px; margin-left:-28px; margin-top:-28px;
+      border-radius: 28px; background: rgba(255,255,255,.16); border: 1px solid rgba(255,255,255,.2);
+    }
+    #btnJump {
+      position:absolute; right: 18px; bottom: 28px; width: 82px; height: 82px; border-radius: 41px;
+      background: rgba(255,255,255,.10); border: 1px solid rgba(255,255,255,.16);
+      display:flex; align-items:center; justify-content:center; color:#fff; font-weight:700;
+      pointer-events: auto; user-select:none; -webkit-user-select:none;
+    }
+    #crosshair {
+      position:absolute; left:50%; top:50%; width:18px; height:18px; margin-left:-9px; margin-top:-9px;
+      opacity:.55;
+    }
+    #crosshair:before, #crosshair:after {
+      content:""; position:absolute; left:50%; top:50%; background:#fff;
+      transform: translate(-50%,-50%);
+    }
+    #crosshair:before { width: 18px; height: 2px; }
+    #crosshair:after  { width: 2px; height: 18px; }
+
+    #fps {
+      position:absolute; right: 12px; top: 12px; padding: 8px 10px; border-radius: 12px;
+      background: rgba(0,0,0,.45); color:#fff; font-size: 12px; pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+<div id="ui">
+  <div id="hint">
+    <div><b>Управление:</b> левый джойстик — ходьба, свайп по экрану — поворот камеры, <b>JUMP</b> — прыжок.</div>
+    <div id="btnLock">▶ Нажми, чтобы включить “режим игры” (Pointer Lock)</div>
+    <div style="margin-top:6px; opacity:.85">Если лагает — снизь “качество” в коде: <i>qualityPreset</i>.</div>
+  </div>
+  <div id="fps">…</div>
+  <div id="crosshair"></div>
+
+  <div id="stickBase"><div id="stickKnob"></div></div>
+  <div id="btnJump">JUMP</div>
+</div>
+
+<script type="module">
+  import * as THREE from "https://unpkg.com/three@0.161.0/build/three.module.js";
+  import { RGBELoader } from "https://unpkg.com/three@0.161.0/examples/jsm/loaders/RGBELoader.js";
+  import { EffectComposer } from "https://unpkg.com/three@0.161.0/examples/jsm/postprocessing/EffectComposer.js";
+  import { RenderPass } from "https://unpkg.com/three@0.161.0/examples/jsm/postprocessing/RenderPass.js";
+  import { SSAOPass } from "https://unpkg.com/three@0.161.0/examples/jsm/postprocessing/SSAOPass.js";
+  import { UnrealBloomPass } from "https://unpkg.com/three@0.161.0/examples/jsm/postprocessing/UnrealBloomPass.js";
+  import { OutputPass } from "https://unpkg.com/three@0.161.0/examples/jsm/postprocessing/OutputPass.js";
+
+  // ======= Quality presets (tune for mobile) =======
+  // 0 = low, 1 = medium, 2 = high
+  const qualityPreset = 1;
+
+  const dpr = Math.min(window.devicePixelRatio || 1, qualityPreset === 2 ? 1.75 : (qualityPreset === 1 ? 1.35 : 1.0));
+  const shadowMapSize = qualityPreset === 2 ? 2048 : (qualityPreset === 1 ? 1024 : 512);
+
+  // ======= Basic scene =======
+  const renderer = new THREE.WebGLRenderer({ antialias: qualityPreset >= 1, powerPreference: "high-performance" });
+  renderer.setPixelRatio(dpr);
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.05;
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  document.body.appendChild(renderer.domElement);
+
+  const scene = new THREE.Scene();
+  scene.fog = new THREE.FogExp2(0x0b0f16, 0.015);
+
+  const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.05, 220);
+  camera.position.set(0, 1.7, 5);
+
+  // ======= Lighting + HDR environment (realistic look) =======
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  new RGBELoader()
+    .setDataType(THREE.FloatType)
+    .load(
+      // HDRI (public polyhaven link). If offline, you'll still see basic lighting.
+      "https://dl.polyhaven.org/file/ph-assets/HDRIs/hdr/1k/venice_sunset_1k.hdr",
+      (hdr) => {
+        const env = pmrem.fromEquirectangular(hdr).texture;
+        scene.environment = env;
+        scene.background = env;
+        hdr.dispose();
+        pmrem.dispose();
+      },
+      undefined,
+      () => {
+        // fallback background
+        scene.background = new THREE.Color(0x101622);
+      }
+    );
+
+  const sun = new THREE.DirectionalLight(0xffffff, 2.0);
+  sun.position.set(20, 30, 10);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(shadowMapSize, shadowMapSize);
+  sun.shadow.camera.near = 1;
+  sun.shadow.camera.far = 120;
+  sun.shadow.camera.left = -40;
+  sun.shadow.camera.right = 40;
+  sun.shadow.camera.top = 40;
+  sun.shadow.camera.bottom = -40;
+  scene.add(sun);
+
+  const hemi = new THREE.HemisphereLight(0xaecbff, 0x132233, 0.6);
+  scene.add(hemi);
+
+  // ======= Postprocessing (SSAO + Bloom) =======
+  const composer = new EffectComposer(renderer);
+  composer.addPass(new RenderPass(scene, camera));
+  if (qualityPreset >= 1) {
+    const ssao = new SSAOPass(scene, camera, window.innerWidth, window.innerHeight);
+    ssao.kernelRadius = qualityPreset === 2 ? 10 : 6;
+    ssao.minDistance = 0.001;
+    ssao.maxDistance = 0.08;
+    composer.addPass(ssao);
+  }
+  if (qualityPreset >= 1) {
+    const bloom = new UnrealBloomPass(
+      new THREE.Vector2(window.innerWidth, window.innerHeight),
+      qualityPreset === 2 ? 0.35 : 0.25,
+      0.4,
+      0.85
+    );
+    composer.addPass(bloom);
+  }
+  composer.addPass(new OutputPass());
+
+  // ======= "Realistic" materials (PBR) =======
+  function makeGroundMaterial() {
+    // Procedural-ish ground (no external textures): still PBR
+    const mat = new THREE.MeshStandardMaterial({
+      color: 0x59624f,
+      roughness: 0.95,
+      metalness: 0.0,
+    });
+    return mat;
+  }
+
+  function makeStoneMaterial() {
+    return new THREE.MeshStandardMaterial({
+      color: 0x7a7f86,
+      roughness: 0.88,
+      metalness: 0.02,
+    });
+  }
+
+  function makeMetalMaterial() {
+    return new THREE.MeshStandardMaterial({
+      color: 0xa9b0b8,
+      roughness: 0.22,
+      metalness: 0.85,
+    });
+  }
+
+  // ======= World (voxel-like but smoother + props) =======
+  const world = new THREE.Group();
+  scene.add(world);
+
+  // Big ground plane with displacement-like micro detail via vertex noise
+  const groundGeo = new THREE.PlaneGeometry(120, 120, 220, 220);
+  groundGeo.rotateX(-Math.PI / 2);
+  const pos = groundGeo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), z = pos.getZ(i);
+    // simple fbm-ish noise
+    const h = (
+      0.55*Math.sin(x*0.12) * Math.cos(z*0.10) +
+      0.22*Math.sin(x*0.37 + z*0.18) +
+      0.12*Math.cos(z*0.62)
+    );
+    pos.setY(i, h);
+  }
+  groundGeo.computeVertexNormals();
+
+  const ground = new THREE.Mesh(groundGeo, makeGroundMaterial());
+  ground.receiveShadow = true;
+  world.add(ground);
+
+  // Some "rocks" and "metal crates"
+  const rockGeo = new THREE.IcosahedronGeometry(0.7, 1);
+  const metalGeo = new THREE.BoxGeometry(1.1, 1.1, 1.1);
+
+  function addRock(x, z, s=1) {
+    const m = new THREE.Mesh(rockGeo, makeStoneMaterial());
+    m.position.set(x, 0.6, z);
+    m.scale.setScalar(s);
+    m.rotation.set(Math.random()*0.5, Math.random()*Math.PI, Math.random()*0.5);
+    m.castShadow = true;
+    m.receiveShadow = true;
+    world.add(m);
+  }
+
+  function addCrate(x, z) {
+    const m = new THREE.Mesh(metalGeo, makeMetalMaterial());
+    m.position.set(x, 0.6, z);
+    m.rotation.y = Math.random()*Math.PI;
+    m.castShadow = true;
+    m.receiveShadow = true;
+    world.add(m);
+  }
+
+  for (let i = 0; i < 40; i++) addRock((Math.random()-0.5)*45, (Math.random()-0.5)*45, 0.6+Math.random()*1.2);
+  for (let i = 0; i < 18; i++) addCrate((Math.random()-0.5)*38, (Math.random()-0.5)*38);
+
+  // ======= Simple physics (character controller w/ gravity + ground sampling) =======
+  const player = {
+    pos: new THREE.Vector3(0, 2.2, 7),
+    vel: new THREE.Vector3(0, 0, 0),
+    yaw: 0,
+    pitch: 0,
+    grounded: false,
+  };
+
+  const raycaster = new THREE.Raycaster();
+  const up = new THREE.Vector3(0,1,0);
+
+  function sampleGroundHeight(x, z) {
+    // Raycast down from high point
+    raycaster.set(new THREE.Vector3(x, 50, z), new THREE.Vector3(0, -1, 0));
+    const hits = raycaster.intersectObject(ground, false);
+    return hits.length ? hits[0].point.y : -999;
+  }
+
+  // ======= Mobile joystick + look =======
+  const stickBase = document.getElementById("stickBase");
+  const stickKnob = document.getElementById("stickKnob");
+  const btnJump = document.getElementById("btnJump");
+  const btnLock = document.getElementById("btnLock");
+  const fpsEl = document.getElementById("fps");
+
+  const input = {
+    moveX: 0,
+    moveY: 0,
+    lookDX: 0,
+    lookDY: 0,
+    jump: false
+  };
+
+  // Pointer lock for desktop; on mobile this mainly "arms" look controls
+  btnLock.addEventListener("pointerdown", async () => {
+    try { await renderer.domElement.requestPointerLock?.(); } catch {}
+  });
+
+  // Joystick
+  let stickId = null;
+  let stickCenter = { x: 0, y: 0 };
+  const stickRadius = 54;
+
+  function setKnob(dx, dy) {
+    stickKnob.style.transform = `translate(${dx}px, ${dy}px)`;
+  }
+
+  stickBase.addEventListener("pointerdown", (e) => {
+    stickId = e.pointerId;
+    stickBase.setPointerCapture(stickId);
+    const r = stickBase.getBoundingClientRect();
+    stickCenter.x = r.left + r.width/2;
+    stickCenter.y = r.top + r.height/2;
+    setKnob(0,0);
+  });
+
+  stickBase.addEventListener("pointermove", (e) => {
+    if (e.pointerId !== stickId) return;
+    const dx = e.clientX - stickCenter.x;
+    const dy = e.clientY - stickCenter.y;
+    const len = Math.hypot(dx, dy);
+    const k = len > stickRadius ? stickRadius / len : 1;
+    const ndx = dx * k;
+    const ndy = dy * k;
+    setKnob(ndx, ndy);
+    input.moveX = ndx / stickRadius;
+    input.moveY = ndy / stickRadius;
+  });
+
+  function releaseStick() {
+    stickId = null;
+    input.moveX = 0;
+    input.moveY = 0;
+    setKnob(0,0);
+  }
+
+  stickBase.addEventListener("pointerup", (e) => { if (e.pointerId === stickId) releaseStick(); });
+  stickBase.addEventListener("pointercancel", (e) => { if (e.pointerId === stickId) releaseStick(); });
+
+  // Jump button
+  let jumpHeld = false;
+  btnJump.addEventListener("pointerdown", (e) => { jumpHeld = true; input.jump = true; btnJump.setPointerCapture(e.pointerId); });
+  btnJump.addEventListener("pointerup", () => { jumpHeld = false; input.jump = false; });
+
+  // Look: swipe anywhere except joystick + jump
+  let lookId = null;
+  let last = { x: 0, y: 0 };
+
+  function isIn(el, x, y) {
+    const r = el.getBoundingClientRect();
+    return x>=r.left && x<=r.right && y>=r.top && y<=r.bottom;
+  }
+
+  window.addEventListener("pointerdown", (e) => {
+    if (isIn(stickBase, e.clientX, e.clientY) || isIn(btnJump, e.clientX, e.clientY)) return;
+    lookId = e.pointerId;
+    last.x = e.clientX; last.y = e.clientY;
+  }, { passive: true });
+
+  window.addEventListener("pointermove", (e) => {
+    if (e.pointerId !== lookId) return;
+    const dx = e.clientX - last.x;
+    const dy = e.clientY - last.y;
+    last.x = e.clientX; last.y = e.clientY;
+    input.lookDX += dx;
+    input.lookDY += dy;
+  }, { passive: true });
+
+  window.addEventListener("pointerup", (e) => { if (e.pointerId === lookId) lookId = null; }, { passive: true });
+
+  // Keyboard fallback (desktop)
+  const keys = new Set();
+  window.addEventListener("keydown", (e) => keys.add(e.code));
+  window.addEventListener("keyup", (e) => keys.delete(e.code));
+
+  // ======= Main loop =======
+  let lastT = performance.now();
+  let fpsAcc = 0, fpsCount = 0, fpsShow = 0;
+
+  function step(t) {
+    const dt = Math.min(0.033, (t - lastT) / 1000);
+    lastT = t;
+
+    // Yaw/pitch update
+    const lookSpeed = 0.0022 * (qualityPreset === 0 ? 1.1 : 1.0);
+    player.yaw   -= input.lookDX * lookSpeed;
+    player.pitch -= input.lookDY * lookSpeed;
+    input.lookDX = 0; input.lookDY = 0;
+    player.pitch = Math.max(-1.2, Math.min(1.2, player.pitch));
+
+    // Move input: mobile joystick + keyboard
+    let mx = input.moveX;
+    let my = input.moveY;
+    if (keys.has("KeyW")) my = -1;
+    if (keys.has("KeyS")) my =  1;
+    if (keys.has("KeyA")) mx = -1;
+    if (keys.has("KeyD")) mx =  1;
+
+    const forward = new THREE.Vector3(Math.sin(player.yaw), 0, Math.cos(player.yaw));
+    const right   = new THREE.Vector3(forward.z, 0, -forward.x);
+
+    const move = new THREE.Vector3()
+      .addScaledVector(right, mx)
+      .addScaledVector(forward, -my);
+
+    const len = move.length();
+    if (len > 1e-3) move.multiplyScalar(1 / Math.max(1, len));
+
+    const speed = player.grounded ? 6.2 : 5.4;
+    const accel = player.grounded ? 34 : 14;
+
+    // Smooth acceleration in XZ
+    const targetVX = move.x * speed;
+    const targetVZ = move.z * speed;
+    player.vel.x += (targetVX - player.vel.x) * Math.min(1, accel * dt);
+    player.vel.z += (targetVZ - player.vel.z) * Math.min(1, accel * dt);
+
+    // Gravity
+    player.vel.y -= 18.0 * dt;
+
+    // Jump
+    const wantJump = input.jump || keys.has("Space");
+    if (wantJump && player.grounded) {
+      player.vel.y = 7.2;
+      player.grounded = false;
+    }
+    // Apply motion
+    player.pos.addScaledVector(player.vel, dt);
+
+    // Ground collision (simple)
+    const groundY = sampleGroundHeight(player.pos.x, player.pos.z);
+    const footY = groundY + 1.0; // player "capsule" bottom offset
+    if (player.pos.y < footY) {
+      player.pos.y = footY;
+      player.vel.y = 0;
+      player.grounded = true;
+    } else {
+      player.grounded = false;
+    }
+
+    // Camera
+    camera.position.copy(player.pos);
+    camera.rotation.set(player.pitch, player.yaw, 0, "YXZ");
+
+    // Render
+    composer.render();
+
+    // FPS counter
+    fpsAcc += 1 / Math.max(1e-6, dt);
+    fpsCount++;
+    if (fpsCount >= 12) {
+      fpsShow = fpsAcc / fpsCount;
+      fpsAcc = 0; fpsCount = 0;
+      fpsEl.textContent = `${fpsShow.toFixed(0)} FPS | DPR ${dpr.toFixed(2)} | Q${qualityPreset}`;
+    }
+
+    requestAnimationFrame(step);
+  }
+
+  // Resize
+  window.addEventListener("resize", () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, dpr));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    composer.setSize(window.innerWidth, window.innerHeight);
+  });
+
+  requestAnimationFrame(step);
+</script>
+</body>
+</html>
