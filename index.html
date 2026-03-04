@@ -54,8 +54,8 @@
 <div id="ui">
   <div id="hint">
     <div><b>Управление:</b> левый джойстик — ходьба, свайп по экрану — поворот камеры, <b>JUMP</b> — прыжок.</div>
-    <div id="btnLock">▶ Нажми, чтобы включить “режим игры” (Pointer Lock)</div>
-    <div style="margin-top:6px; opacity:.85">Если лагает — снизь “качество” в коде: <i>qualityPreset</i>.</div>
+    <div id="btnLock">▶ Нажми, чтобы включить "режим игры" (Pointer Lock)</div>
+    <div style="margin-top:6px; opacity:.85">Если лагает — снизь "качество" в коде: <i>qualityPreset</i>.</div>
   </div>
   <div id="fps">…</div>
   <div id="crosshair"></div>
@@ -77,12 +77,12 @@
   // 0 = low, 1 = medium, 2 = high
   const qualityPreset = 1;
 
-  const dpr = Math.min(window.devicePixelRatio || 1, qualityPreset === 2 ? 1.75 : (qualityPreset === 1 ? 1.35 : 1.0));
+  let currentDpr = Math.min(window.devicePixelRatio || 1, qualityPreset === 2 ? 1.75 : (qualityPreset === 1 ? 1.35 : 1.0));
   const shadowMapSize = qualityPreset === 2 ? 2048 : (qualityPreset === 1 ? 1024 : 512);
 
   // ======= Basic scene =======
   const renderer = new THREE.WebGLRenderer({ antialias: qualityPreset >= 1, powerPreference: "high-performance" });
-  renderer.setPixelRatio(dpr);
+  renderer.setPixelRatio(currentDpr);
   renderer.setSize(window.innerWidth, window.innerHeight);
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
@@ -270,6 +270,14 @@
     try { await renderer.domElement.requestPointerLock?.(); } catch {}
   });
 
+  document.addEventListener("pointerlockchange", () => {
+    if (document.pointerLockElement === renderer.domElement) {
+      // Pointer lock acquired
+    } else {
+      // Pointer lock lost
+    }
+  });
+
   // Joystick
   let stickId = null;
   let stickCenter = { x: 0, y: 0 };
@@ -312,9 +320,9 @@
   stickBase.addEventListener("pointercancel", (e) => { if (e.pointerId === stickId) releaseStick(); });
 
   // Jump button
-  let jumpHeld = false;
-  btnJump.addEventListener("pointerdown", (e) => { jumpHeld = true; input.jump = true; btnJump.setPointerCapture(e.pointerId); });
-  btnJump.addEventListener("pointerup", () => { jumpHeld = false; input.jump = false; });
+  btnJump.addEventListener("pointerdown", (e) => { input.jump = true; btnJump.setPointerCapture(e.pointerId); });
+  btnJump.addEventListener("pointerup", (e) => { input.jump = false; btnJump.releasePointerCapture(e.pointerId); });
+  btnJump.addEventListener("pointercancel", (e) => { input.jump = false; });
 
   // Look: swipe anywhere except joystick + jump
   let lookId = null;
@@ -341,6 +349,7 @@
   }, { passive: true });
 
   window.addEventListener("pointerup", (e) => { if (e.pointerId === lookId) lookId = null; }, { passive: true });
+  window.addEventListener("pointercancel", (e) => { if (e.pointerId === lookId) lookId = null; }, { passive: true });
 
   // Keyboard fallback (desktop)
   const keys = new Set();
@@ -425,7 +434,7 @@
     if (fpsCount >= 12) {
       fpsShow = fpsAcc / fpsCount;
       fpsAcc = 0; fpsCount = 0;
-      fpsEl.textContent = `${fpsShow.toFixed(0)} FPS | DPR ${dpr.toFixed(2)} | Q${qualityPreset}`;
+      fpsEl.textContent = `${fpsShow.toFixed(0)} FPS | DPR ${currentDpr.toFixed(2)} | Q${qualityPreset}`;
     }
 
     requestAnimationFrame(step);
@@ -435,7 +444,8 @@
   window.addEventListener("resize", () => {
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, dpr));
+    currentDpr = Math.min(window.devicePixelRatio || 1, qualityPreset === 2 ? 1.75 : (qualityPreset === 1 ? 1.35 : 1.0));
+    renderer.setPixelRatio(currentDpr);
     renderer.setSize(window.innerWidth, window.innerHeight);
     composer.setSize(window.innerWidth, window.innerHeight);
   });
